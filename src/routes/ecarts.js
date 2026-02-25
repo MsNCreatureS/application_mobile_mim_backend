@@ -61,6 +61,44 @@ router.get('/', async (req, res) => {
 });
 
 /**
+ * GET /api/ecarts/unread-count
+ * Récupère le nombre d'écarts non lus ou nécessitant une action (messages non lus)
+ */
+router.get('/unread-count', async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const role = req.user.role;
+
+        let query;
+        let params;
+
+        // On compte les messages non lus dans les écarts de l'utilisateur
+        if (role === 'ADMIN') {
+            query = `
+                SELECT COUNT(DISTINCT m.IdEcart) as count
+                FROM MessagesEcart m
+                WHERE m.Lu = 0 AND m.IdUtilisateur != ?`;
+            params = [userId];
+        } else {
+            query = `
+                SELECT COUNT(DISTINCT m.IdEcart) as count
+                FROM MessagesEcart m
+                INNER JOIN Ecart e ON m.IdEcart = e.IdEcart
+                WHERE m.Lu = 0 AND m.IdUtilisateur != ? AND e.IdUtilisateurCreateur = ?`;
+            params = [userId, userId];
+        }
+
+        const [rows] = await pool.execute(query, params);
+        const count = rows[0].count;
+
+        return res.json({ success: true, count });
+    } catch (error) {
+        console.error('Erreur unread-count ecarts:', error);
+        return res.status(500).json({ success: false, message: 'Erreur serveur.' });
+    }
+});
+
+/**
  * GET /api/ecarts/:id
  * Détail d'un écart
  */
