@@ -218,4 +218,87 @@ router.post('/:id/messages', async (req, res) => {
     }
 });
 
+/**
+ * PUT /api/ecarts/:id/status
+ * Changer le statut d'un écart
+ * Body: { status: 0|1|2|3, observation?: string }
+ * Statuts: 0=Ouvert, 1=EnCours, 2=Resolu, 3=Ferme
+ */
+router.put('/:id/status', async (req, res) => {
+    try {
+        const ecartId = req.params.id;
+        const userId = req.user.id;
+        const { status, observation } = req.body;
+
+        // Validations
+        if (status === undefined || status === null) {
+            return res.status(400).json({ success: false, message: 'Le statut est requis.' });
+        }
+
+        const validStatuses = [0, 1, 2, 3];
+        if (!validStatuses.includes(parseInt(status))) {
+            return res.status(400).json({ success: false, message: 'Statut invalide.' });
+        }
+
+        // Vérifier que l'écart existe
+        const [ecartRows] = await pool.execute(
+            `SELECT e.IdEcart, e.Status FROM Ecart WHERE IdEcart = ?`,
+            [ecartId]
+        );
+
+        if (ecartRows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Écart non trouvé.' });
+        }
+
+        const oldStatus = ecartRows[0].Status;
+        const newStatus = parseInt(status);
+
+        // Mettre à jour le statut de l'écart
+        await pool.execute(
+            `UPDATE Ecart SET Status = ? WHERE IdEcart = ?`,
+            [newStatus, ecartId]
+        );
+
+        // Mapper les statuts
+        const statusLabels = { 0: 'Ouvert', 1: 'EnCours', 2: 'Resolu', 3: 'Ferme' };
+        const newStatusLabel = statusLabels[newStatus];
+
+        // Enregistrer le changement de statut comme un message système
+        const messageText = observation ? observation : undefined;
+        
+        await pool.execute(
+            `INSERT INTO MessagesEcart (IdEcart, IdUtilisateur, Message, NouveauStatus, DateCreation, Lu)
+       VALUES (?, ?, ?, ?, NOW(), 0)`,
+            [ecartId, userId, messageText || null, newStatusLabel]
+        );
+
+        // Créer une notification pour l'admin/le créateur de l'écart
+        const [userRows] = await pool.execute(
+            `SELECT IdUtilisateurCreateur FROM Ecart WHERE IdEcart = ?`,
+            [ecartId]
+        );
+
+        if (userRows.length > 0) {
+            const creatorId = userRows[0].IdUtilisateurCreateur;
+            const targetUserId = creatorId === userId ? null : creatorId;
+
+            await pool.execute(
+                `INSERT INTO Notifications (IdUtilisateur, Titre, Message, Type, Lien, DateCreation, Lu)
+         VALUES (?, ?, ?, 'Ecart', ?, NOW(), 0)`,
+                [
+                    targetUserId,
+                    `Statut changé - Écart #${ecartId}`,
+                    `Status : ${newStatusLabel}`,
+                    String(ecartId),
+                ]
+            );
+        }
+
+        return res.json({ success: true, statusLabel: newStatusLabel });
+    } catch (error) {
+        console.error('Erreur update status ecart:', error);
+        return res.status(500).json({ success: false, message: 'Erreur serveur.' });
+    }
+});
+
 module.exports = router;
