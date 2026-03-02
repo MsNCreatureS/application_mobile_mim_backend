@@ -7,6 +7,43 @@ const router = express.Router();
 // Toutes les routes nécessitent une authentification
 router.use(requireAuth);
 
+// Helpers de mapping de status entre la BDD (texte) et le front (codes/labels)
+function mapStatusToLabel(statusValue) {
+    const raw = (statusValue ?? '').toString().trim();
+
+    // Valeurs texte telles que stockées par le logiciel (EF Core)
+    if (raw === 'Ouvert' || raw.toUpperCase() === 'OUVERT' || raw === '0') {
+        return 'Ouvert';
+    }
+    if (raw === 'En cours' || raw === 'EnCours' || raw === '1') {
+        return 'EnCours';
+    }
+    if (raw === 'Résolu' || raw === 'Resolu' || raw === '2') {
+        return 'Resolu';
+    }
+    if (raw === 'Fermé' || raw === 'Ferme' || raw === '3') {
+        return 'Ferme';
+    }
+
+    return `Inconnu (${statusValue})`;
+}
+
+function mapCodeToDbStatus(code) {
+    // Codes utilisés par le front : 0=Ouvert, 1=EnCours, 2=Resolu, 3=Ferme
+    switch (Number(code)) {
+        case 0:
+            return 'Ouvert';
+        case 1:
+            return 'En cours';
+        case 2:
+            return 'Résolu';
+        case 3:
+            return 'Fermé';
+        default:
+            return null;
+    }
+}
+
 /**
  * GET /api/ecarts
  * Liste les écarts de l'utilisateur connecté (ou tous si Admin)
@@ -52,11 +89,9 @@ router.get('/', async (req, res) => {
 
         const [rows] = await pool.execute(query, params);
 
-        // Map StatusEcart int to label
-        const statusLabels = { 0: 'Ouvert', 1: 'EnCours', 2: 'Resolu', 3: 'Ferme' };
         const ecarts = rows.map((row) => ({
             ...row,
-            statusLabel: statusLabels[row.Status] || `Inconnu (${row.Status})`,
+            statusLabel: mapStatusToLabel(row.Status),
         }));
 
         return res.json({ success: true, ecarts });
@@ -130,10 +165,10 @@ router.get('/:id', async (req, res) => {
             return res.status(404).json({ success: false, message: 'Écart non trouvé.' });
         }
 
-        const statusLabels = { 0: 'Ouvert', 1: 'EnCours', 2: 'Resolu', 3: 'Ferme' };
+        const row = rows[0];
         const ecart = {
-            ...rows[0],
-            statusLabel: statusLabels[rows[0].Status] || `Inconnu (${rows[0].Status})`,
+            ...row,
+            statusLabel: mapStatusToLabel(row.Status),
         };
 
         return res.json({ success: true, ecart });
@@ -244,8 +279,14 @@ router.put('/:id/status', async (req, res) => {
             return res.status(400).json({ success: false, message: 'Le statut est requis.' });
         }
 
+        const numericStatus = parseInt(status, 10);
         const validStatuses = [0, 1, 2, 3];
-        if (!validStatuses.includes(parseInt(status))) {
+        if (!validStatuses.includes(numericStatus)) {
+            return res.status(400).json({ success: false, message: 'Statut invalide.' });
+        }
+
+        const dbStatus = mapCodeToDbStatus(numericStatus);
+        if (!dbStatus) {
             return res.status(400).json({ success: false, message: 'Statut invalide.' });
         }
 
@@ -259,18 +300,14 @@ router.put('/:id/status', async (req, res) => {
             return res.status(404).json({ success: false, message: 'Écart non trouvé.' });
         }
 
-        const oldStatus = ecartRows[0].Status;
-        const newStatus = parseInt(status);
-
-        // Mettre à jour le statut de l'écart
+        // Mettre à jour le statut de l'écart (texte, comme le logiciel)
         await pool.execute(
             `UPDATE Ecart SET Status = ? WHERE IdEcart = ?`,
-            [newStatus, ecartId]
+            [dbStatus, ecartId]
         );
 
-        // Mapper les statuts
-        const statusLabels = { 0: 'Ouvert', 1: 'EnCours', 2: 'Resolu', 3: 'Ferme' };
-        const newStatusLabel = statusLabels[newStatus];
+        // Libellé pour le front (mêmes valeurs que statusLabel)
+        const newStatusLabel = mapStatusToLabel(dbStatus);
 
         // Enregistrer le changement de statut comme un message système
         const messageText = observation ? observation : undefined;
