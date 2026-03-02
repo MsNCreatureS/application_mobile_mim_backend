@@ -251,7 +251,7 @@ router.put('/:id/status', async (req, res) => {
 
         // Vérifier que l'écart existe
         const [ecartRows] = await pool.execute(
-            `SELECT e.IdEcart, e.Status FROM Ecart WHERE IdEcart = ?`,
+            `SELECT IdEcart, Status FROM Ecart WHERE IdEcart = ?`,
             [ecartId]
         );
 
