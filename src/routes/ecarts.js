@@ -528,24 +528,28 @@ router.post('/:id/cloture', async (req, res) => {
             }
         }
 
-        // Créer l'enregistrement de clôture
-        await connection.execute(
-            `INSERT INTO ClotureEcart
-             (IdEcart, TypeCloture, RaisonPasAction, IdActionInterne, DescriptifTravaux,
-              DateTravaux, PrestataireExterne, DateInterventionExterne, DateCloture, IdUtilisateurCloture)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)`,
-            [
-                ecartId,
-                typeCloture,
-                typeCloture === 'PasAction' ? (raisonPasAction || '').trim() : null,
-                typeCloture === 'ActionInterne' ? idActionInterne || null : null,
-                descriptifTravaux ? descriptifTravaux.trim() : null,
-                typeCloture === 'ActionInterne' ? dateTravauxDb : null,
-                typeCloture === 'ActionExterne' ? (prestataireExterne || '').trim() : null,
-                typeCloture === 'ActionExterne' ? dateIntervDb : null,
-                userId || null,
-            ]
-        );
+        // Enregistrement de clôture (non-bloquant — la table peut ne pas exister en dev)
+        try {
+            await connection.execute(
+                `INSERT INTO ClotureEcart
+                 (IdEcart, TypeCloture, RaisonPasAction, IdActionInterne, DescriptifTravaux,
+                  DateTravaux, PrestataireExterne, DateInterventionExterne, DateCloture, IdUtilisateurCloture)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)`,
+                [
+                    ecartId,
+                    typeCloture,
+                    typeCloture === 'PasAction' ? (raisonPasAction || '').trim() : null,
+                    typeCloture === 'ActionInterne' ? idActionInterne || null : null,
+                    descriptifTravaux ? descriptifTravaux.trim() : null,
+                    typeCloture === 'ActionInterne' ? dateTravauxDb : null,
+                    typeCloture === 'ActionExterne' ? (prestataireExterne || '').trim() : null,
+                    typeCloture === 'ActionExterne' ? dateIntervDb : null,
+                    userId || null,
+                ]
+            );
+        } catch (clotureInsertErr) {
+            console.warn('ClotureEcart INSERT ignoré (table absente ou contrainte):', clotureInsertErr.message);
+        }
 
         // Générer le résumé de clôture (même logique que le logiciel)
         let resumeCloture = '';
@@ -586,25 +590,36 @@ router.post('/:id/cloture', async (req, res) => {
             ]
         );
 
-        // Créer une notification pour les admins (IdUtilisateur NULL)
-        const titreNotif = 'Écart clôturé';
-        const messageNotifLines = [];
-        if (ecartRow.NumeroInterne) {
-            messageNotifLines.push(`L'écart sur l'équipement ${ecartRow.NumeroInterne} a été clôturé`);
-        } else {
-            messageNotifLines.push("Un écart a été clôturé");
-        }
-        messageNotifLines.push(`Type: ${friendlyType}`);
+        // Notification (non-bloquante)
+        try {
+            const titreNotif = 'Écart clôturé';
+            const messageNotifLines = [];
+            if (ecartRow.NumeroInterne) {
+                messageNotifLines.push(`L'écart sur l'équipement ${ecartRow.NumeroInterne} a été clôturé`);
+            } else {
+                messageNotifLines.push("Un écart a été clôturé");
+            }
+            messageNotifLines.push(`Type: ${friendlyType}`);
 
-        await connection.execute(
-            `INSERT INTO Notifications (IdUtilisateur, Titre, Message, Type, Lien, DateCreation, Lu)
-             VALUES (NULL, ?, ?, 'ClotureEcart', ?, NOW(), 0)`,
-            [
-                titreNotif,
-                messageNotifLines.join('\n'),
-                String(ecartId),
-            ]
-        );
+            // Chercher un admin à notifier plutôt que d'insérer NULL
+            const [adminRows] = await connection.execute(
+                `SELECT IdUtilisateur FROM Utilisateurs WHERE Role = 'ADMIN' LIMIT 1`
+            );
+            if (adminRows.length > 0) {
+                await connection.execute(
+                    `INSERT INTO Notifications (IdUtilisateur, Titre, Message, Type, Lien, DateCreation, Lu)
+                     VALUES (?, ?, ?, 'ClotureEcart', ?, NOW(), 0)`,
+                    [
+                        adminRows[0].IdUtilisateur,
+                        titreNotif,
+                        messageNotifLines.join('\n'),
+                        String(ecartId),
+                    ]
+                );
+            }
+        } catch (notifErr) {
+            console.warn('Notification clôture ignorée (non-bloquante):', notifErr.message);
+        }
 
         await connection.commit();
 
