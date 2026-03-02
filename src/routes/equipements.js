@@ -345,6 +345,78 @@ router.post('/', async (req, res) => {
 });
 
 /**
+ * GET /api/equipements/by-numero/:numeroInterne
+ * Détail complet d'un équipement via son numéro interne
+ */
+router.get('/by-numero/:numeroInterne', async (req, res) => {
+  try {
+    const numeroInterne = String(req.params.numeroInterne || '').trim();
+
+    if (!numeroInterne) {
+      return res.status(400).json({ success: false, message: 'NumeroInterne requis.' });
+    }
+
+    const [rows] = await pool.execute(
+      `SELECT eq.IdEquipement, eq.NumeroInterne, eq.Affectation, eq.Localisation,
+              eq.Observations, eq.Status, eq.IdType,
+              te.NomType, te.Famille
+       FROM Equipement eq
+       LEFT JOIN TypeEquipement te ON eq.IdType = te.IdType
+       WHERE eq.NumeroInterne = ?
+       LIMIT 1`,
+      [numeroInterne]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Équipement non trouvé.' });
+    }
+
+    const equipement = rows[0];
+
+    const [champsRows] = await pool.execute(
+      `SELECT cp.NomChamp, cp.TypeDonnees,
+              vc.ValeurTexte, vc.ValeurDate, vc.ValeurNombre
+       FROM ValeurChamp vc
+       INNER JOIN ChampPersonnalise cp ON vc.IdChamp = cp.IdChamp
+       WHERE vc.IdEquipement = ?
+       ORDER BY cp.IdChamp ASC`,
+      [equipement.IdEquipement]
+    );
+
+    const champsPersonnalises = champsRows.map((row) => {
+      let valeur = '';
+      if (row.TypeDonnees === 'Date' && row.ValeurDate) {
+        const d = new Date(row.ValeurDate);
+        const day = String(d.getDate()).padStart(2, '0');
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const year = d.getFullYear();
+        valeur = `${day}/${month}/${year}`;
+      } else if (row.TypeDonnees === 'Nombre' && row.ValeurNombre !== null) {
+        valeur = String(row.ValeurNombre);
+      } else {
+        valeur = row.ValeurTexte || '';
+      }
+      return {
+        nomChamp: row.NomChamp,
+        typeDonnees: row.TypeDonnees,
+        valeur,
+      };
+    });
+
+    return res.json({
+      success: true,
+      equipement: {
+        ...equipement,
+        champsPersonnalises,
+      },
+    });
+  } catch (error) {
+    console.error('Erreur GET /equipements/by-numero/:numeroInterne:', error);
+    return res.status(500).json({ success: false, message: 'Erreur serveur.' });
+  }
+});
+
+/**
  * GET /api/equipements/:id
  * Détail complet d'un équipement avec tous ses champs personnalisés
  */
