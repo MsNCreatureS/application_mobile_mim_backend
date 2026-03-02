@@ -23,10 +23,13 @@ router.get('/', async (req, res) => {
             query = `
         SELECT e.IdEcart, e.TypeControle, e.Description, e.Action, e.Status,
                e.DateCreation, e.IdEquipement, e.IdUtilisateurCreateur,
-               eq.NumeroInterne,
+               eq.NumeroInterne, eq.Affectation, eq.Localisation, eq.Observations AS EquipementObservations,
+               eq.Status AS EquipementStatus,
+               te.NomType, te.Famille,
                (SELECT COUNT(*) FROM MessagesEcart m WHERE m.IdEcart = e.IdEcart AND m.Lu = 0 AND m.IdUtilisateur != ?) AS messagesNonLus
         FROM Ecart e
         LEFT JOIN Equipement eq ON e.IdEquipement = eq.IdEquipement
+        LEFT JOIN TypeEquipement te ON eq.IdType = te.IdType
         ORDER BY e.DateCreation DESC
         LIMIT 100`;
             params = [userId];
@@ -34,10 +37,13 @@ router.get('/', async (req, res) => {
             query = `
         SELECT e.IdEcart, e.TypeControle, e.Description, e.Action, e.Status,
                e.DateCreation, e.IdEquipement, e.IdUtilisateurCreateur,
-               eq.NumeroInterne,
+               eq.NumeroInterne, eq.Affectation, eq.Localisation, eq.Observations AS EquipementObservations,
+               eq.Status AS EquipementStatus,
+               te.NomType, te.Famille,
                (SELECT COUNT(*) FROM MessagesEcart m WHERE m.IdEcart = e.IdEcart AND m.Lu = 0 AND m.IdUtilisateur != ?) AS messagesNonLus
         FROM Ecart e
         LEFT JOIN Equipement eq ON e.IdEquipement = eq.IdEquipement
+        LEFT JOIN TypeEquipement te ON eq.IdType = te.IdType
         WHERE e.IdUtilisateurCreateur = ?
         ORDER BY e.DateCreation DESC
         LIMIT 100`;
@@ -110,9 +116,12 @@ router.get('/:id', async (req, res) => {
             `SELECT e.IdEcart, e.TypeControle, e.Description, e.Action, e.Status,
               e.DateCreation, e.IdEquipement, e.IdUtilisateurCreateur,
               e.EmailNotification,
-              eq.NumeroInterne
+              eq.NumeroInterne, eq.Affectation, eq.Localisation, eq.Observations AS EquipementObservations,
+              eq.Status AS EquipementStatus,
+              te.NomType, te.Famille
        FROM Ecart e
        LEFT JOIN Equipement eq ON e.IdEquipement = eq.IdEquipement
+       LEFT JOIN TypeEquipement te ON eq.IdType = te.IdType
        WHERE e.IdEcart = ?`,
             [ecartId]
         );
@@ -265,7 +274,7 @@ router.put('/:id/status', async (req, res) => {
 
         // Enregistrer le changement de statut comme un message système
         const messageText = observation ? observation : undefined;
-        
+
         await pool.execute(
             `INSERT INTO MessagesEcart (IdEcart, IdUtilisateur, Message, NouveauStatus, DateCreation, Lu)
        VALUES (?, ?, ?, ?, NOW(), 0)`,
