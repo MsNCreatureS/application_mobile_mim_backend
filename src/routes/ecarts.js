@@ -44,6 +44,40 @@ function mapCodeToDbStatus(code) {
     }
 }
 
+function getFriendlyClotureType(typeCloture) {
+    switch (typeCloture) {
+        case 'PasAction':
+            return "Pas d'action";
+        case 'ActionInterne':
+            return 'Action interne';
+        case 'ActionExterne':
+            return 'Action externe';
+        default:
+            return typeCloture;
+    }
+}
+
+function formatDateFr(dateStr) {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    if (Number.isNaN(d.getTime())) return '';
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const year = d.getFullYear();
+    return `${day}/${month}/${year}`;
+}
+
+function formatDateTimeFr(date) {
+    const d = date instanceof Date ? date : new Date(date);
+    if (Number.isNaN(d.getTime())) return '';
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const year = d.getFullYear();
+    const hours = String(d.getHours()).padStart(2, '0');
+    const minutes = String(d.getMinutes()).padStart(2, '0');
+    return `${day}/${month}/${year} ${hours}:${minutes}`;
+}
+
 /**
  * GET /api/ecarts
  * Liste les écarts de l'utilisateur connecté (ou tous si Admin)
@@ -97,6 +131,26 @@ router.get('/', async (req, res) => {
         return res.json({ success: true, ecarts });
     } catch (error) {
         console.error('Erreur list ecarts:', error);
+        return res.status(500).json({ success: false, message: 'Erreur serveur.' });
+    }
+});
+
+/**
+ * GET /api/ecarts/actions-internes
+ * Liste les actions internes disponibles pour la clôture d'écarts
+ */
+router.get('/actions-internes', async (req, res) => {
+    try {
+        const [rows] = await pool.execute(
+            `SELECT Id, Libelle, Description, Ordre
+             FROM ActionInterneEcart
+             WHERE EstActif = 1
+             ORDER BY Ordre ASC, Libelle ASC`
+        );
+
+        return res.json({ success: true, actions: rows });
+    } catch (error) {
+        console.error('Erreur list actions internes ecart:', error);
         return res.status(500).json({ success: false, message: 'Erreur serveur.' });
     }
 });
@@ -344,6 +398,211 @@ router.put('/:id/status', async (req, res) => {
     } catch (error) {
         console.error('Erreur update status ecart:', error);
         return res.status(500).json({ success: false, message: 'Erreur serveur.' });
+    }
+});
+
+/**
+ * POST /api/ecarts/:id/cloture
+ * Clôturer un écart avec formulaire détaillé (comme le logiciel)
+ * Body: {
+ *   typeCloture: 'PasAction' | 'ActionInterne' | 'ActionExterne',
+ *   raisonPasAction?: string,
+ *   idActionInterne?: number,
+ *   dateTravaux?: string (YYYY-MM-DD),
+ *   descriptifTravaux?: string,
+ *   prestataireExterne?: string,
+ *   dateInterventionExterne?: string (YYYY-MM-DD)
+ * }
+ */
+router.post('/:id/cloture', async (req, res) => {
+    const connection = await pool.getConnection();
+    try {
+        const ecartId = req.params.id;
+        const userId = req.user.id;
+        const {
+            typeCloture,
+            raisonPasAction,
+            idActionInterne,
+            dateTravaux,
+            descriptifTravaux,
+            prestataireExterne,
+            dateInterventionExterne,
+        } = req.body;
+
+        // Validation type
+        const allowedTypes = ['PasAction', 'ActionInterne', 'ActionExterne'];
+        if (!typeCloture || !allowedTypes.includes(typeCloture)) {
+            return res.status(400).json({ success: false, message: 'Type de clôture invalide.' });
+        }
+
+        // Validation détaillée (on reste proche du logiciel, sans être bloquant sur les dates)
+        if (typeCloture === 'PasAction') {
+            const txt = (raisonPasAction || '').trim();
+            if (!txt || txt.length < 10) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'La raison du non-traitement est obligatoire (au moins 10 caractères).',
+                });
+            }
+        } else if (typeCloture === 'ActionInterne') {
+            if (!idActionInterne) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Une action interne doit être sélectionnée.',
+                });
+            }
+            const desc = (descriptifTravaux || '').trim();
+            if (!desc || desc.length < 10) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Le descriptif des travaux internes est obligatoire (au moins 10 caractères).',
+                });
+            }
+        } else if (typeCloture === 'ActionExterne') {
+            const prest = (prestataireExterne || '').trim();
+            const desc = (descriptifTravaux || '').trim();
+            if (!prest) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Le nom du prestataire externe est obligatoire.',
+                });
+            }
+            if (!desc || desc.length < 10) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Le descriptif des travaux externes est obligatoire (au moins 10 caractères).",
+                });
+            }
+        }
+
+        // Normaliser les dates (laisser null si vide)
+        const dateTravauxDb = dateTravaux && String(dateTravaux).trim() ? String(dateTravaux).trim() : null;
+        const dateIntervDb =
+            dateInterventionExterne && String(dateInterventionExterne).trim()
+                ? String(dateInterventionExterne).trim()
+                : null;
+
+        await connection.beginTransaction();
+
+        // Récupérer l'écart et l'équipement (pour le résumé et la notif)
+        const [ecartRows] = await connection.execute(
+            `SELECT e.IdEcart, e.Action, e.IdEquipement, eq.NumeroInterne
+             FROM Ecart e
+             LEFT JOIN Equipement eq ON e.IdEquipement = eq.IdEquipement
+             WHERE e.IdEcart = ?`,
+            [ecartId]
+        );
+
+        if (ecartRows.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ success: false, message: 'Écart non trouvé.' });
+        }
+
+        const ecartRow = ecartRows[0];
+
+        // Récupérer éventuellement l'action interne pour le libellé
+        let actionInterneLibelle = null;
+        if (typeCloture === 'ActionInterne' && idActionInterne) {
+            const [actionRows] = await connection.execute(
+                `SELECT Libelle FROM ActionInterneEcart WHERE Id = ?`,
+                [idActionInterne]
+            );
+            if (actionRows.length > 0) {
+                actionInterneLibelle = actionRows[0].Libelle;
+            }
+        }
+
+        // Créer l'enregistrement de clôture
+        await connection.execute(
+            `INSERT INTO ClotureEcart
+             (IdEcart, TypeCloture, RaisonPasAction, IdActionInterne, DescriptifTravaux,
+              DateTravaux, PrestataireExterne, DateInterventionExterne, DateCloture, IdUtilisateurCloture)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)`,
+            [
+                ecartId,
+                typeCloture,
+                typeCloture === 'PasAction' ? (raisonPasAction || '').trim() : null,
+                typeCloture === 'ActionInterne' ? idActionInterne || null : null,
+                descriptifTravaux ? descriptifTravaux.trim() : null,
+                typeCloture === 'ActionInterne' ? dateTravauxDb : null,
+                typeCloture === 'ActionExterne' ? (prestataireExterne || '').trim() : null,
+                typeCloture === 'ActionExterne' ? dateIntervDb : null,
+                userId || null,
+            ]
+        );
+
+        // Générer le résumé de clôture (même logique que le logiciel)
+        let resumeCloture = '';
+        if (typeCloture === 'PasAction') {
+            resumeCloture = `Pas d'action - Raison: ${(raisonPasAction || '').trim()}`;
+        } else if (typeCloture === 'ActionInterne') {
+            resumeCloture =
+                `Action interne (${actionInterneLibelle || 'N/A'})` +
+                (dateTravauxDb ? ` - Date: ${formatDateFr(dateTravauxDb)}` : '') +
+                (descriptifTravaux ? ` - Travaux: ${descriptifTravaux.trim()}` : '');
+        } else if (typeCloture === 'ActionExterne') {
+            resumeCloture =
+                `Action externe par ${(prestataireExterne || '').trim()}` +
+                (dateIntervDb ? ` - Date: ${formatDateFr(dateIntervDb)}` : '') +
+                (descriptifTravaux ? ` - Travaux: ${descriptifTravaux.trim()}` : '');
+        }
+
+        const now = new Date();
+        const resumeLigne = `[${formatDateTimeFr(now)}] CLÔTURE: ${resumeCloture}`;
+        const nouvelleAction = `${ecartRow.Action || ''}\n\n${resumeLigne}`.trim();
+
+        // Mettre l'écart en "Résolu" et ajouter le résumé dans Action
+        await connection.execute(
+            `UPDATE Ecart SET Status = 'Résolu', Action = ? WHERE IdEcart = ?`,
+            [nouvelleAction, ecartId]
+        );
+
+        // Créer un message d'historique
+        const friendlyType = getFriendlyClotureType(typeCloture);
+        await connection.execute(
+            `INSERT INTO MessagesEcart (IdEcart, IdUtilisateur, Message, NouveauStatus, DateCreation, Lu)
+             VALUES (?, ?, ?, ?, NOW(), 0)`,
+            [
+                ecartId,
+                userId || null,
+                `Écart clôturé - ${friendlyType}`,
+                'Cloture',
+            ]
+        );
+
+        // Créer une notification pour les admins (IdUtilisateur NULL)
+        const titreNotif = 'Écart clôturé';
+        const messageNotifLines = [];
+        if (ecartRow.NumeroInterne) {
+            messageNotifLines.push(`L'écart sur l'équipement ${ecartRow.NumeroInterne} a été clôturé`);
+        } else {
+            messageNotifLines.push("Un écart a été clôturé");
+        }
+        messageNotifLines.push(`Type: ${friendlyType}`);
+
+        await connection.execute(
+            `INSERT INTO Notifications (IdUtilisateur, Titre, Message, Type, Lien, DateCreation, Lu)
+             VALUES (NULL, ?, ?, 'ClotureEcart', ?, NOW(), 0)`,
+            [
+                titreNotif,
+                messageNotifLines.join('\n'),
+                String(ecartId),
+            ]
+        );
+
+        await connection.commit();
+
+        return res.json({ success: true });
+    } catch (error) {
+        try {
+            await connection.rollback();
+        } catch (rollbackError) {
+            console.error('Erreur rollback cloture ecart:', rollbackError);
+        }
+        console.error('Erreur cloture ecart:', error);
+        return res.status(500).json({ success: false, message: 'Erreur serveur.' });
+    } finally {
+        connection.release();
     }
 });
 
