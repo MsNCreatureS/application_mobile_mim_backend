@@ -1,6 +1,7 @@
 const express = require('express');
 const pool = require('../config/database');
 const { requireAuth } = require('../middleware/auth');
+const { sendPushNotifications, getUserPushTokens, getAdminPushTokens } = require('../utils/pushNotifications');
 
 const router = express.Router();
 
@@ -293,20 +294,53 @@ router.post('/:id/messages', async (req, res) => {
 
         if (ecartRows.length > 0) {
             const creatorId = ecartRows[0].IdUtilisateurCreateur;
-            // Si c'est l'utilisateur lui-même qui envoie, notifier les admins (null)
-            // Sinon notifier le créateur
-            const targetUserId = creatorId === userId ? null : creatorId;
+            const isCreatorSending = (creatorId === userId);
+            const targetUserId = (!isCreatorSending && creatorId) ? creatorId : null;
 
-            await pool.execute(
-                `INSERT INTO Notifications (IdUtilisateur, Titre, Message, Type, Lien, DateCreation, Lu)
-         VALUES (?, ?, ?, 'Ecart', ?, NOW(), 0)`,
-                [
-                    targetUserId,
-                    `Nouveau message - Écart #${ecartId}`,
-                    message.trim().substring(0, 200),
-                    String(ecartId),
-                ]
-            );
+            // Notification en base
+            try {
+                await pool.execute(
+                    `INSERT INTO Notifications (IdUtilisateur, Titre, Message, Type, Lien, DateCreation, Lu)
+             VALUES (?, ?, ?, 'Ecart', ?, NOW(), 0)`,
+                    [
+                        targetUserId,
+                        `Nouveau message - Écart #${ecartId}`,
+                        message.trim().substring(0, 200),
+                        String(ecartId),
+                    ]
+                );
+            } catch (notifErr) {
+                console.warn('Notification message ignorée:', notifErr.message);
+            }
+
+            // Push notification (non-bloquant)
+            try {
+                let pushTokens = [];
+                if (isCreatorSending) {
+                    // Créateur envoie → notifier les admins
+                    pushTokens = await getAdminPushTokens(pool);
+                } else if (creatorId) {
+                    // Admin envoie → notifier le créateur
+                    pushTokens = await getUserPushTokens(pool, [creatorId]);
+                }
+
+                const [senderRow] = await pool.execute(
+                    `SELECT Prenom, Nom FROM Utilisateurs WHERE IdUtilisateur = ?`,
+                    [userId]
+                );
+                const senderName = senderRow.length > 0
+                    ? `${senderRow[0].Prenom || ''} ${senderRow[0].Nom || ''}`.trim()
+                    : 'Quelqu\'un';
+
+                await sendPushNotifications(
+                    pushTokens,
+                    `Écart #${ecartId} - Nouveau message`,
+                    `${senderName} : ${message.trim().substring(0, 100)}`,
+                    { screen: 'ecart-discussion', ecartId: String(ecartId) }
+                );
+            } catch (pushErr) {
+                console.warn('[Push] Erreur message:', pushErr.message);
+            }
         }
 
         return res.json({ success: true });
@@ -408,6 +442,31 @@ router.put('/:id/status', async (req, res) => {
         } catch (notifError) {
             // La notification est optionnelle, on log sans bloquer la réponse
             console.warn('Erreur création notification (non-bloquante):', notifError.message);
+        }
+
+        // Notification push (non-bloquante)
+        try {
+            const [userRows2] = await pool.execute(
+                `SELECT IdUtilisateurCreateur FROM Ecart WHERE IdEcart = ?`,
+                [ecartId]
+            );
+            if (userRows2.length > 0) {
+                const creatorId2 = userRows2[0].IdUtilisateurCreateur;
+                let pushTokens = [];
+                if (creatorId2 && creatorId2 !== userId) {
+                    pushTokens = await getUserPushTokens(pool, [creatorId2]);
+                } else {
+                    pushTokens = await getAdminPushTokens(pool);
+                }
+                await sendPushNotifications(
+                    pushTokens,
+                    `Écart #${ecartId} - Statut mis à jour`,
+                    `Le statut est maintenant : ${newStatusLabel.replace('EnCours', 'En cours')}`,
+                    { screen: 'ecart-discussion', ecartId: String(ecartId) }
+                );
+            }
+        } catch (pushErr) {
+            console.warn('[Push] Erreur statut:', pushErr.message);
         }
 
         return res.json({ success: true, statusLabel: newStatusLabel });

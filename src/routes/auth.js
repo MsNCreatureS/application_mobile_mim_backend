@@ -2,6 +2,7 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/database');
 const { hashPassword } = require('../utils/hash');
+const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -116,6 +117,45 @@ router.get('/me', async (req, res) => {
     console.error('Erreur /me:', error);
     return res.status(500).json({ success: false, message: 'Erreur serveur.' });
   }
+});
+
+/**
+ * PUT /api/auth/push-token
+ * Enregistre ou met à jour le token push Expo de l'utilisateur connecté.
+ * Body: { token: 'ExponentPushToken[...]' }
+ */
+router.put('/push-token', requireAuth, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { token } = req.body;
+
+        if (!token) {
+            return res.status(400).json({ success: false, message: 'Token requis.' });
+        }
+
+        // Créer la table si elle n'existe pas encore
+        await pool.execute(`
+            CREATE TABLE IF NOT EXISTS UserPushTokens (
+                IdUtilisateur INT NOT NULL,
+                Token         VARCHAR(255) NOT NULL,
+                UpdatedAt     DATETIME DEFAULT NOW() ON UPDATE NOW(),
+                PRIMARY KEY (IdUtilisateur)
+            )
+        `);
+
+        // Upsert du token
+        await pool.execute(
+            `INSERT INTO UserPushTokens (IdUtilisateur, Token, UpdatedAt)
+             VALUES (?, ?, NOW())
+             ON DUPLICATE KEY UPDATE Token = VALUES(Token), UpdatedAt = NOW()`,
+            [userId, token]
+        );
+
+        return res.json({ success: true });
+    } catch (error) {
+        console.error('Erreur save push token:', error);
+        return res.status(500).json({ success: false, message: 'Erreur serveur.' });
+    }
 });
 
 module.exports = router;
