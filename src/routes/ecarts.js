@@ -363,35 +363,51 @@ router.put('/:id/status', async (req, res) => {
         // Libellé pour le front (mêmes valeurs que statusLabel)
         const newStatusLabel = mapStatusToLabel(dbStatus);
 
-        // Enregistrer le changement de statut comme un message système
-        const messageText = observation ? observation : undefined;
+        // Message par défaut si pas d'observation (comme le logiciel)
+        const defaultMessages = {
+            'EnCours': 'Écart marqué comme "En cours"',
+            'Resolu':  'Écart marqué comme "Résolu"',
+            'Ouvert':  'Écart remis en "Ouvert"',
+            'Ferme':   'Écart clôturé',
+        };
+        const messageText = (observation && observation.trim())
+            ? observation.trim()
+            : (defaultMessages[newStatusLabel] || `Statut changé : ${newStatusLabel}`);
 
         await pool.execute(
             `INSERT INTO MessagesEcart (IdEcart, IdUtilisateur, Message, NouveauStatus, DateCreation, Lu)
        VALUES (?, ?, ?, ?, NOW(), 0)`,
-            [ecartId, userId, messageText || null, newStatusLabel]
+            [ecartId, userId, messageText, newStatusLabel]
         );
 
-        // Créer une notification pour l'admin/le créateur de l'écart
-        const [userRows] = await pool.execute(
-            `SELECT IdUtilisateurCreateur FROM Ecart WHERE IdEcart = ?`,
-            [ecartId]
-        );
-
-        if (userRows.length > 0) {
-            const creatorId = userRows[0].IdUtilisateurCreateur;
-            const targetUserId = creatorId === userId ? null : creatorId;
-
-            await pool.execute(
-                `INSERT INTO Notifications (IdUtilisateur, Titre, Message, Type, Lien, DateCreation, Lu)
-         VALUES (?, ?, ?, 'Ecart', ?, NOW(), 0)`,
-                [
-                    targetUserId,
-                    `Statut changé - Écart #${ecartId}`,
-                    `Status : ${newStatusLabel}`,
-                    String(ecartId),
-                ]
+        // Créer une notification (non-bloquante — ne doit pas faire échouer la réponse)
+        try {
+            const [userRows] = await pool.execute(
+                `SELECT IdUtilisateurCreateur FROM Ecart WHERE IdEcart = ?`,
+                [ecartId]
             );
+
+            if (userRows.length > 0) {
+                const creatorId = userRows[0].IdUtilisateurCreateur;
+                const targetUserId = (creatorId !== null && creatorId !== userId) ? creatorId : null;
+
+                // N'insérer la notification que si on a un destinataire valide
+                if (targetUserId !== null) {
+                    await pool.execute(
+                        `INSERT INTO Notifications (IdUtilisateur, Titre, Message, Type, Lien, DateCreation, Lu)
+             VALUES (?, ?, ?, 'Ecart', ?, NOW(), 0)`,
+                        [
+                            targetUserId,
+                            `Statut changé - Écart #${ecartId}`,
+                            `Status : ${newStatusLabel}`,
+                            String(ecartId),
+                        ]
+                    );
+                }
+            }
+        } catch (notifError) {
+            // La notification est optionnelle, on log sans bloquer la réponse
+            console.warn('Erreur création notification (non-bloquante):', notifError.message);
         }
 
         return res.json({ success: true, statusLabel: newStatusLabel });
