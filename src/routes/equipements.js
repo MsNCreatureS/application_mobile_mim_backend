@@ -417,6 +417,159 @@ router.get('/by-numero/:numeroInterne', async (req, res) => {
 });
 
 /**
+ * PUT /api/equipements/validite/by-numero/:numeroInterne
+ * Met à jour une date de validité d'un équipement via scan
+ */
+router.put('/validite/by-numero/:numeroInterne', async (req, res) => {
+  let connection;
+  try {
+    const numeroInterne = String(req.params.numeroInterne || '').trim();
+    const idType = Number(req.body?.idType);
+    const idChampDate = Number(req.body?.idChampDate);
+    const dateValidite = parseDateOnly(req.body?.dateValidite);
+
+    if (!numeroInterne) {
+      return res.status(400).json({ success: false, message: 'NumeroInterne requis.' });
+    }
+
+    if (!Number.isInteger(idType) || idType <= 0) {
+      return res.status(400).json({ success: false, message: 'idType invalide.' });
+    }
+
+    if (!Number.isInteger(idChampDate) || idChampDate <= 0) {
+      return res.status(400).json({ success: false, message: 'idChampDate invalide.' });
+    }
+
+    if (!dateValidite) {
+      return res.status(400).json({ success: false, message: 'dateValidite invalide (format attendu YYYY-MM-DD).' });
+    }
+
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    const [equipementRows] = await connection.execute(
+      `SELECT IdEquipement, NumeroInterne, IdType
+       FROM Equipement
+       WHERE NumeroInterne = ?
+       LIMIT 1`,
+      [numeroInterne]
+    );
+
+    if (equipementRows.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ success: false, message: 'Équipement non trouvé.' });
+    }
+
+    const equipement = equipementRows[0];
+
+    if (Number(equipement.IdType) !== idType) {
+      await connection.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'Le type sélectionné ne correspond pas à cet équipement.',
+      });
+    }
+
+    const [champRows] = await connection.execute(
+      `SELECT IdChamp, NomChamp, TypeDonnees
+       FROM ChampPersonnalise
+       WHERE IdChamp = ? AND IdType = ?
+       LIMIT 1`,
+      [idChampDate, idType]
+    );
+
+    if (champRows.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ success: false, message: 'Champ de date introuvable pour ce type.' });
+    }
+
+    const champ = champRows[0];
+    if (String(champ.TypeDonnees || '').trim() !== 'Date') {
+      await connection.rollback();
+      return res.status(400).json({ success: false, message: 'Le champ sélectionné n’est pas un champ date.' });
+    }
+
+    const [valeurRows] = await connection.execute(
+      `SELECT IdValeur
+       FROM ValeurChamp
+       WHERE IdEquipement = ? AND IdChamp = ?
+       LIMIT 1`,
+      [equipement.IdEquipement, idChampDate]
+    );
+
+    if (valeurRows.length > 0) {
+      await connection.execute(
+        `UPDATE ValeurChamp
+         SET ValeurDate = ?, ValeurTexte = '', ValeurNombre = NULL
+         WHERE IdValeur = ?`,
+        [dateValidite, valeurRows[0].IdValeur]
+      );
+    } else {
+      await connection.execute(
+        `INSERT INTO ValeurChamp (ValeurTexte, ValeurDate, ValeurNombre, IdChamp, IdEquipement)
+         VALUES ('', ?, NULL, ?, ?)`,
+        [dateValidite, idChampDate, equipement.IdEquipement]
+      );
+    }
+
+    const [statusRows] = await connection.execute(
+      `SELECT cp.EstRequisPourAlerte, vc.ValeurDate
+       FROM ChampPersonnalise cp
+       LEFT JOIN ValeurChamp vc
+         ON vc.IdChamp = cp.IdChamp AND vc.IdEquipement = ?
+       WHERE cp.IdType = ? AND cp.TypeDonnees = 'Date' AND cp.EstRequisPourAlerte = 1`,
+      [equipement.IdEquipement, idType]
+    );
+
+    const now = new Date();
+    const todayOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    let status = 'ACTIF';
+
+    for (const row of statusRows) {
+      if (!row.ValeurDate) {
+        continue;
+      }
+      const d = new Date(row.ValeurDate);
+      const dateOnly = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+      if (dateOnly < todayOnly) {
+        status = 'RETARD';
+        break;
+      }
+    }
+
+    await connection.execute(
+      'UPDATE Equipement SET Status = ? WHERE IdEquipement = ?',
+      [status, equipement.IdEquipement]
+    );
+
+    await connection.commit();
+
+    return res.json({
+      success: true,
+      message: 'Date de validité mise à jour.',
+      data: {
+        numeroInterne: equipement.NumeroInterne,
+        idType,
+        idChampDate,
+        nomChampDate: champ.NomChamp,
+        dateValidite,
+        status,
+      },
+    });
+  } catch (error) {
+    if (connection) {
+      await connection.rollback();
+    }
+    console.error('Erreur PUT /equipements/validite/by-numero/:numeroInterne:', error);
+    return res.status(500).json({ success: false, message: 'Erreur serveur.' });
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
+});
+
+/**
  * GET /api/equipements/:id
  * Détail complet d'un équipement avec tous ses champs personnalisés
  */
