@@ -635,6 +635,47 @@ router.get('/search', async (req, res) => {
 });
 
 /**
+ * GET /api/equipements/stats
+ * Statistiques dashboard: total équipements + maintenance (retard)
+ */
+router.get('/stats', async (req, res) => {
+  try {
+    const [totalRows] = await pool.execute(
+      `SELECT COUNT(*) AS totalEquipements
+       FROM Equipement`
+    );
+
+    const [maintenanceRows] = await pool.execute(
+      `SELECT COUNT(*) AS maintenanceCount
+       FROM Equipement eq
+       WHERE EXISTS (
+         SELECT 1
+         FROM ChampPersonnalise cp
+         INNER JOIN ValeurChamp vc
+           ON vc.IdChamp = cp.IdChamp
+          AND vc.IdEquipement = eq.IdEquipement
+         WHERE cp.IdType = eq.IdType
+           AND cp.TypeDonnees = 'Date'
+           AND cp.EstRequisPourAlerte = 1
+           AND vc.ValeurDate IS NOT NULL
+           AND DATE(vc.ValeurDate) < CURDATE()
+       )`
+    );
+
+    return res.json({
+      success: true,
+      stats: {
+        totalEquipements: Number(totalRows?.[0]?.totalEquipements || 0),
+        maintenanceCount: Number(maintenanceRows?.[0]?.maintenanceCount || 0),
+      },
+    });
+  } catch (error) {
+    console.error('Erreur GET /equipements/stats:', error);
+    return res.status(500).json({ success: false, message: 'Erreur serveur.' });
+  }
+});
+
+/**
  * GET /api/equipements/:id
  * Détail complet d'un équipement avec tous ses champs personnalisés
  */
