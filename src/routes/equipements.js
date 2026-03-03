@@ -570,6 +570,56 @@ router.put('/validite/by-numero/:numeroInterne', async (req, res) => {
 });
 
 /**
+ * GET /api/equipements/search?q=...
+ * Recherche simple multi-champs d'équipements
+ */
+router.get('/search', async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+
+    if (!q) {
+      return res.json({ success: true, results: [] });
+    }
+
+    const like = `%${q}%`;
+
+    const [rows] = await pool.execute(
+      `SELECT eq.IdEquipement, eq.NumeroInterne, eq.Affectation, eq.Localisation,
+              eq.Observations, eq.Status,
+              te.NomType, te.Famille
+       FROM Equipement eq
+       LEFT JOIN TypeEquipement te ON te.IdType = eq.IdType
+       WHERE eq.NumeroInterne LIKE ?
+          OR te.NomType LIKE ?
+          OR te.Famille LIKE ?
+          OR eq.Affectation LIKE ?
+          OR eq.Localisation LIKE ?
+          OR eq.Observations LIKE ?
+       ORDER BY eq.NumeroInterne ASC
+       LIMIT 50`,
+      [like, like, like, like, like, like]
+    );
+
+    return res.json({
+      success: true,
+      results: rows.map((row) => ({
+        idEquipement: row.IdEquipement,
+        numeroInterne: row.NumeroInterne,
+        nomType: row.NomType,
+        famille: row.Famille,
+        affectation: row.Affectation,
+        localisation: row.Localisation,
+        observations: row.Observations,
+        status: row.Status,
+      })),
+    });
+  } catch (error) {
+    console.error('Erreur GET /equipements/search:', error);
+    return res.status(500).json({ success: false, message: 'Erreur serveur.' });
+  }
+});
+
+/**
  * GET /api/equipements/:id
  * Détail complet d'un équipement avec tous ses champs personnalisés
  */
