@@ -3,8 +3,14 @@ const nodemailer = require('nodemailer');
 const LOGO_URL = 'https://support.mim-foselev.fr/logos/logo_MIM.png';
 
 function getTransporter() {
+  const host = process.env.SMTP_HOST || 'smtp.gmail.com';
+  const port = Number(process.env.SMTP_PORT || 465);
+  const secure = String(process.env.SMTP_SECURE || 'true').toLowerCase() === 'true';
+
   return nodemailer.createTransport({
-    service: 'gmail',
+    host,
+    port,
+    secure,
     auth: {
       user: process.env.EMAIL_USER,
       pass: process.env.EMAIL_PASS,
