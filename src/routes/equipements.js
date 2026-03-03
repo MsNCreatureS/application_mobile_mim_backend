@@ -586,6 +586,21 @@ router.get('/search', async (req, res) => {
     const [rows] = await pool.execute(
       `SELECT eq.IdEquipement, eq.NumeroInterne, eq.Affectation, eq.Localisation,
               eq.Observations, eq.Status,
+              CASE
+                WHEN EXISTS (
+                  SELECT 1
+                  FROM ChampPersonnalise cp
+                  INNER JOIN ValeurChamp vc
+                    ON vc.IdChamp = cp.IdChamp
+                   AND vc.IdEquipement = eq.IdEquipement
+                  WHERE cp.IdType = eq.IdType
+                    AND cp.TypeDonnees = 'Date'
+                    AND cp.EstRequisPourAlerte = 1
+                    AND vc.ValeurDate IS NOT NULL
+                    AND DATE(vc.ValeurDate) < CURDATE()
+                ) THEN 'RETARD'
+                ELSE 'ACTIF'
+              END AS StatusCalcule,
               te.NomType, te.Famille
        FROM Equipement eq
        LEFT JOIN TypeEquipement te ON te.IdType = eq.IdType
@@ -610,7 +625,7 @@ router.get('/search', async (req, res) => {
         affectation: row.Affectation,
         localisation: row.Localisation,
         observations: row.Observations,
-        status: row.Status,
+        status: row.StatusCalcule || row.Status,
       })),
     });
   } catch (error) {
